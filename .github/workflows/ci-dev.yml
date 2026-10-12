@@ -1,0 +1,107 @@
+name: CI Dev Deployment
+
+# Part 2 (Grade A): every push to main builds the action and publishes a
+# dev release. Nothing here is gated - dev is the environment where we want
+# feedback to be instant.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+# Default for every job in this file: read only. The one job that needs to
+# create a release raises its own permission, and no higher.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Build
+        run: npm run build --if-present
+
+      - name: Package build artifact
+        run: |
+          zip -r build.zip . \
+            -x '.git/*' -x 'node_modules/.cache/*' -x '*.zip'
+          ls -lh build.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: build.zip
+          retention-days: 7
+
+  deploy-dev:
+    name: Deploy to dev
+    needs: build
+    runs-on: ubuntu-latest
+    # Binds the job to the dev environment, so vars.* below resolve to the
+    # dev values and the run shows up in the environment's deployment history.
+    environment:
+      name: dev
+      url: ${{ steps.release.outputs.url }}
+    permissions:
+      contents: write # required to create a release
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Create dev release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          # Both come from the dev environment, not from the workflow file.
+          TAG: ${{ vars.BUILD_TAG }}
+          NOTE: ${{ vars.RELEASE_NOTE }}
+        run: |
+          set -euo pipefail
+          # Dev tags are overwritten on every push: the dev channel tracks
+          # main rather than accumulating a release per commit.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Replacing existing $TAG"
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" build.zip \
+            --title "$TAG" \
+            --notes "$NOTE
+
+          Built from \`${GITHUB_SHA:0:7}\` on \`${GITHUB_REF_NAME}\`." \
+            --prerelease
+          echo "url=$(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Dev deployment"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Tag | \`${{ vars.BUILD_TAG }}\` |"
+            echo "| Note | ${{ vars.RELEASE_NOTE }} |"
+            echo "| Commit | \`${GITHUB_SHA:0:7}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
