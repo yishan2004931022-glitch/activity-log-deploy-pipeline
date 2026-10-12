@@ -203,9 +203,12 @@ jobs:
   # Drafts the release notes the production reviewer reads before approving.
   #
   # Guardrails:
-  #   * contents: read and models: read. No write scope anywhere in this job,
-  #     so the agent cannot create a release, move a tag or touch a deployment.
-  #   * The credential comes from an environment secret, never the workflow file.
+  #   * contents: read is the only permission. That is enough to check out the
+  #     history it summarises and nothing else: no write scope anywhere, so the
+  #     agent cannot create a release, move a tag or touch a deployment. The
+  #     GitHub token is not even passed into the step.
+  #   * The provider credential is an environment secret on ai-review, so only
+  #     this job can read it, and it never appears in the workflow file.
   #   * Commit text is treated as untrusted input inside the script.
   #   * The output is an artifact. A human reads it at the approval gate; the
   #     agent has no way to approve anything.
@@ -216,7 +219,6 @@ jobs:
     environment: ai-review
     permissions:
       contents: read
-      models: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -225,8 +227,11 @@ jobs:
 
       - name: Draft release notes
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The credential is an environment secret on ai-review, so it is
+          # readable only by this job. The endpoint and model are variables on
+          # the same environment, which is what makes the provider swappable.
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_BASE_URL: ${{ vars.AI_BASE_URL }}
           AI_MODEL: ${{ vars.AI_MODEL }}
           PREV_TAG: ${{ needs.version.outputs.prev_tag }}
           NEW_TAG: prod-v${{ needs.version.outputs.version }}

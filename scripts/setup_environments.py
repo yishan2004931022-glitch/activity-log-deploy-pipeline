@@ -38,6 +38,8 @@ except ImportError:  # pragma: no cover - convenience for a fresh machine
 
 TOKEN = os.environ["GH_TOKEN"]
 REPO = os.environ["REPO"]
+# Optional: when present it is stored as the ai-review environment secret.
+AI_API_KEY = os.environ.get("AI_API_KEY", "").strip()
 API = "https://api.github.com"
 
 # BUILD_TAG carries the channel; the pipeline appends the resolved number.
@@ -64,9 +66,16 @@ ENVIRONMENTS: dict[str, dict] = {
         # Filled in at runtime once we know the account id.
         "protection": "required-reviewer",
     },
+    # Not a deployment target. It exists so the agent's credential is scoped to
+    # the one job that needs it instead of being a repository-wide secret.
+    #
+    # The endpoint is configuration, not code: the first version of this
+    # pipeline used GitHub Models, which was retired on 30 July 2026. Changing
+    # provider is now an environment variable edit.
     "ai-review": {
         "vars": {
-            "AI_MODEL": "openai/gpt-4o-mini",
+            "AI_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "AI_MODEL": "gemini-3.8-flash",
         },
         "protection": None,
     },
@@ -159,6 +168,13 @@ def main() -> int:
         if env in SIGNING_KEY_ENVS:
             # Generated here, never printed, never stored outside GitHub.
             put_secret(env, "DEPLOY_SIGNING_KEY", pysecrets.token_hex(32))
+
+        # Passed in through the environment so the key never appears in this
+        # file, in the repository, or in a shell history entry of its own.
+        if env == "ai-review" and AI_API_KEY:
+            put_secret(env, "AI_API_KEY", AI_API_KEY)
+        elif env == "ai-review":
+            print("    secret AI_API_KEY skipped (AI_API_KEY was not set)")
         print()
 
     print("verification")
