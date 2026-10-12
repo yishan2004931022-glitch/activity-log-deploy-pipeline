@@ -36,19 +36,22 @@ who=$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["login"])')
 echo "    authenticated as ${who}"
 
-# ── 3. push ──────────────────────────────────────────────────────────────────
-say "Pushing to GitHub"
+# ── 3. environments ──────────────────────────────────────────────────────────
+# Deliberately before the push: pushing to main triggers the dev deployment
+# immediately, and that job reads BUILD_TAG and RELEASE_NOTE from the dev
+# environment. Create them first and the very first run is a clean release.
+say "Creating environments, variables, secrets and the protection rule"
+REPO="${REPO}" python3 scripts/setup_environments.py
+
+# ── 4. push ──────────────────────────────────────────────────────────────────
+say "Pushing to GitHub (this triggers the dev deployment)"
 git remote remove origin 2>/dev/null || true
-# The token is placed in the URL only for this one command and the remote is
-# removed again immediately, so it is not left behind in .git/config.
+# The token is in the URL for this one command only; the remote is reset to the
+# plain URL straight after, so the token is not left behind in .git/config.
 git remote add origin "https://${GH_TOKEN}@github.com/${REPO}.git"
 git push -u origin main
 git remote set-url origin "${REMOTE}"
 echo "    pushed; remote reset to the plain https URL"
-
-# ── 4. environments ──────────────────────────────────────────────────────────
-say "Creating environments, variables, secrets and the protection rule"
-REPO="${REPO}" python3 scripts/setup_environments.py
 
 # ── 5. what is left for you ──────────────────────────────────────────────────
 cat <<EOF
