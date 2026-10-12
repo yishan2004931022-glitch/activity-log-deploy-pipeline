@@ -17,11 +17,24 @@ from __future__ import annotations
 import json
 import os
 import secrets as pysecrets
+import subprocess
 import sys
 import urllib.error
 import urllib.request
 
-from nacl import encoding, public
+try:
+    from nacl import encoding, public
+except ImportError:  # pragma: no cover - convenience for a fresh machine
+    print("PyNaCl missing (needed to encrypt secrets); installing it now...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "pynacl"],
+                   check=False)
+    try:
+        from nacl import encoding, public
+    except ImportError:
+        encoding = public = None
+        print("  could not install PyNaCl. Environments, variables and the\n"
+              "  protection rule will still be configured; the three signing\n"
+              "  secrets will be printed for you to paste in by hand.\n")
 
 TOKEN = os.environ["GH_TOKEN"]
 REPO = os.environ["REPO"]
@@ -102,7 +115,14 @@ def put_variable(env: str, name: str, value: str) -> None:
             raise
 
 
+MANUAL_SECRETS: list[tuple[str, str, str]] = []
+
+
 def put_secret(env: str, name: str, value: str) -> None:
+    if public is None:
+        MANUAL_SECRETS.append((env, name, value))
+        print(f"    secret {name} NOT set - add it by hand (printed at the end)")
+        return
     key = call("GET", f"/repos/{REPO}/environments/{env}/secrets/public-key")
     call("PUT", f"/repos/{REPO}/environments/{env}/secrets/{name}", {
         "encrypted_value": seal(key["key"], value),
@@ -147,7 +167,16 @@ def main() -> int:
         rules = [r.get("type") for r in env.get("protection_rules", [])]
         v = call("GET", f"/repos/{REPO}/environments/{env['name']}/variables")
         names = sorted(x["name"] for x in v.get("variables", []))
-        print(f"  {env['name']:12} rules={rules or 'none':<40} vars={names}")
+        print(f"  {env['name']:12} rules={str(rules or 'none'):<40} vars={names}")
+
+    if MANUAL_SECRETS:
+        print("\n" + "=" * 68)
+        print("Add these by hand: Settings > Environments > <env> > Add secret")
+        print("=" * 68)
+        for env, name, value in MANUAL_SECRETS:
+            print(f"  {env:12} {name} = {value}")
+        print("\nThese are throwaway HMAC keys for the signing demo. Any random\n"
+              "hex string works, as long as each environment gets a different one.")
     return 0
 
 
