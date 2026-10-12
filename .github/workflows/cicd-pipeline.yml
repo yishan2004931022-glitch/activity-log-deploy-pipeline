@@ -1,0 +1,376 @@
+name: CI/CD Deployment Pipeline
+
+# Part 3 (Grade E) + Part 4 (Grade O).
+#
+#   version ─► test (matrix) ─► build ─► deploy-staging ─► ai-release-notes ─► deploy-production
+#                                                                                    │
+#                                                                           rollback ◄┘ (on failure)
+#
+# staging and production ship the SAME artifact. Only the tag, the notes and
+# the environment secret used to sign it differ.
+on:
+  workflow_dispatch:
+    inputs:
+      skip_production:
+        description: "Stop after staging (dry run of the pipeline)"
+        type: boolean
+        default: false
+
+# Read-only by default. Each job raises only what it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-pipeline
+  cancel-in-progress: false
+
+jobs:
+  # ── 1. Version ────────────────────────────────────────────────────────────
+  # One version number for the whole run. Production tags are the canonical
+  # history, so the next patch is derived from the highest prod-v* tag and
+  # major.minor come from package.json. Nobody edits a version by hand.
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+      describe: ${{ steps.calc.outputs.describe }}
+      prev_tag: ${{ steps.prev.outputs.prev_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags and history are the input to versioning
+          fetch-tags: true
+
+      - name: Compute next version
+        id: calc
+        env:
+          BUILD_TAG: prod # canonical channel for numbering
+        run: python3 scripts/compute_version.py
+
+      - name: Find previous production tag
+        id: prev
+        run: |
+          prev=$(git tag --list 'prod-v*' --sort=-v:refname | head -n1)
+          echo "prev_tag=${prev}" >> "$GITHUB_OUTPUT"
+          echo "Previous production tag: ${prev:-none}"
+
+  # ── 2. Test ───────────────────────────────────────────────────────────────
+  # Matrix over the two Node versions this action supports. The build job
+  # does not start unless every cell passes.
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install
+        run: npm ci || npm install
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Unit tests
+        run: npm test --if-present
+
+      - name: Verify the action entry point exists
+        # A smoke test that holds even when the upstream project ships no
+        # test script: the thing we are about to release has to be loadable.
+        run: |
+          set -euo pipefail
+          main=$(node -p "require('./package.json').main || 'index.js'")
+          test -f "$main" || { echo "::error::entry point $main is missing"; exit 1; }
+          node --check "$main"
+          echo "Entry point $main parses on Node ${{ matrix.node }}"
+
+  # ── 3. Build ──────────────────────────────────────────────────────────────
+  build:
+    name: Build
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install
+        run: npm ci || npm install
+
+      - name: Build
+        run: npm run build --if-present
+
+      - name: Stamp the build
+        # The artifact carries its own provenance, so a downloaded zip can be
+        # traced back to a run without reading the workflow logs.
+        run: |
+          cat > BUILD_INFO.json <<EOF
+          {
+            "version": "${{ needs.version.outputs.version }}",
+            "describe": "${{ needs.version.outputs.describe }}",
+            "commit": "${GITHUB_SHA}",
+            "run": "${GITHUB_RUN_ID}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat BUILD_INFO.json
+
+      - name: Package
+        run: |
+          zip -r build.zip . -x '.git/*' -x 'node_modules/.cache/*' -x '*.zip'
+          sha256sum build.zip | tee build.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: |
+            build.zip
+            build.zip.sha256
+          retention-days: 30
+
+  # ── 4. Deploy to staging ──────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to staging
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ steps.release.outputs.url }}
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Sign the artifact with the staging key
+        # DEPLOY_SIGNING_KEY is an ENVIRONMENT secret, not a repository secret:
+        # staging and production hold different values, so an artifact signed
+        # for staging cannot be passed off as a production one.
+        env:
+          KEY: ${{ secrets.DEPLOY_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEY:-}" ]; then
+            echo "::error::staging environment secret DEPLOY_SIGNING_KEY is not set"
+            exit 1
+          fi
+          # The key is only ever piped into openssl; it is never echoed.
+          openssl dgst -sha256 -hmac "$KEY" build.zip | awk '{print $2}' > build.zip.sig
+          echo "HMAC written ($(wc -c < build.zip.sig) bytes)"
+
+      - name: Create staging release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_TAG: ${{ vars.BUILD_TAG }}
+          NOTE: ${{ vars.RELEASE_NOTE }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Channel comes from the environment variable, number from the
+          # pipeline: "staging-v1.0" + 1.0.3 -> staging-v1.0.3
+          CHANNEL="${BUILD_TAG%%-*}"
+          TAG="${CHANNEL}-v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" build.zip build.zip.sha256 build.zip.sig \
+            --title "$TAG" \
+            --notes "$NOTE
+
+          Candidate for \`prod-v${VERSION}\`. Built from \`${GITHUB_SHA:0:7}\`." \
+            --prerelease
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "url=$(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_OUTPUT"
+          echo "Published $TAG"
+
+  # ── 5. Agentic AI step ────────────────────────────────────────────────────
+  # Drafts the release notes the production reviewer reads before approving.
+  #
+  # Guardrails:
+  #   * contents: read and models: read. No write scope anywhere in this job,
+  #     so the agent cannot create a release, move a tag or touch a deployment.
+  #   * The credential comes from an environment secret, never the workflow file.
+  #   * Commit text is treated as untrusted input inside the script.
+  #   * The output is an artifact. A human reads it at the approval gate; the
+  #     agent has no way to approve anything.
+  ai-release-notes:
+    name: AI release notes (draft)
+    needs: [version, deploy-staging]
+    runs-on: ubuntu-latest
+    environment: ai-review
+    permissions:
+      contents: read
+      models: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Draft release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_MODEL: ${{ vars.AI_MODEL }}
+          PREV_TAG: ${{ needs.version.outputs.prev_tag }}
+          NEW_TAG: prod-v${{ needs.version.outputs.version }}
+          OUTPUT: release-notes.md
+        run: python3 scripts/release_notes_agent.py
+
+      - name: Upload draft for human review
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes-draft
+          path: release-notes.md
+          retention-days: 30
+
+  # ── 6. Deploy to production ───────────────────────────────────────────────
+  # The production environment carries a required-reviewer rule, so this job
+  # sits in "Waiting" until a human approves it in the Actions UI.
+  deploy-production:
+    name: Deploy to production
+    needs: [version, deploy-staging, ai-release-notes]
+    if: ${{ !inputs.skip_production }}
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.release.outputs.url }}
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes-draft
+
+      - name: Verify the artifact is the one staging tested
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          STAGING_TAG: ${{ needs.deploy-staging.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sha256sum -c build.zip.sha256
+          echo "Artifact matches the checksum recorded at build time."
+          echo "Promoting the build released as $STAGING_TAG."
+
+      - name: Sign the artifact with the production key
+        env:
+          KEY: ${{ secrets.DEPLOY_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEY:-}" ]; then
+            echo "::error::production environment secret DEPLOY_SIGNING_KEY is not set"
+            exit 1
+          fi
+          openssl dgst -sha256 -hmac "$KEY" build.zip | awk '{print $2}' > build.zip.sig
+
+      - name: Create production release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_TAG: ${{ vars.BUILD_TAG }}
+          NOTE: ${{ vars.RELEASE_NOTE }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          CHANNEL="${BUILD_TAG%%-*}"
+          TAG="${CHANNEL}-v${VERSION}"
+          {
+            echo "$NOTE"
+            echo
+            echo "Approved by @${GITHUB_ACTOR} · promoted from \`${{ needs.deploy-staging.outputs.tag }}\`"
+            echo
+            echo "---"
+            echo
+            cat release-notes.md
+          } > final-notes.md
+          gh release create "$TAG" build.zip build.zip.sha256 build.zip.sig \
+            --title "$TAG" --notes-file final-notes.md --latest
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "url=$(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_OUTPUT"
+
+      - name: Notify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.release.outputs.tag }}
+          URL: ${{ steps.release.outputs.url }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GH_REPO}/commits/${GITHUB_SHA}/comments" \
+            -f body="Released **${TAG}** to production. Approved by @${GITHUB_ACTOR}. ${URL}" \
+            >/dev/null
+          {
+            echo "### Production release"
+            echo
+            echo "- Tag: \`${TAG}\`"
+            echo "- Promoted from: \`${{ needs.deploy-staging.outputs.tag }}\`"
+            echo "- Approved by: @${GITHUB_ACTOR}"
+            echo
+            echo "<details><summary>Release notes the reviewer saw</summary>"
+            echo
+            cat release-notes.md
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 7. Rollback ───────────────────────────────────────────────────────────
+  # If production fails part way through, a half-published release must not be
+  # left behind pretending to be the latest version.
+  rollback:
+    name: Rollback
+    needs: [version, deploy-production]
+    if: ${{ failure() && needs.deploy-production.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Remove the partial production release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: prod-v${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+            echo "Deleted partial release $TAG"
+          else
+            echo "No release to remove; failure happened before publication."
+          fi
+
+      - name: Open a failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh issue create \
+            --title "Production deploy of v${VERSION} failed and was rolled back" \
+            --body "Run ${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${GITHUB_RUN_ID} failed during the production stage.
+
+          The partial \`prod-v${VERSION}\` release has been deleted, so the previous production release is still the latest. The staging release for this candidate was left in place for investigation."
