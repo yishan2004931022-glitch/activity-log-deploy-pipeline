@@ -1,0 +1,66 @@
+name: GitHub Activity Log
+description: Displays your GitHub activity in a README file.
+
+inputs:
+  GITHUB_USERNAME:
+    description:  Your GitHub username.
+    required: true
+  GITHUB_TOKEN:
+    description:  Your GitHub token.
+    required: true
+  EVENT_LIMIT:
+    description:  The maximum number of events to display.
+    default:  '10'
+  OUTPUT_STYLE:
+    description:  Specifies the format in which the output should be rendered (MARKDOWN or HTML).
+    default:  MARKDOWN
+  IGNORE_EVENTS:
+    description:  The events to ignore, specified as a JSON array.
+    required: false
+    default:  '[]'
+  HIDE_DETAILS_ON_PRIVATE_REPOS:
+    description:  Hide details (branch/tag name) on private repositories
+    required: false
+    default:  'false'
+  README_PATH:
+    description:  The path to the README file.
+    required: false
+    default:  README.md
+  COMMIT_MESSAGE:
+    description:  Commit Message
+    required: false
+    default:  Update README.md with latest activity
+  EVENT_EMOJI_MAP:
+    description: |
+      Optional YAML object mapping event types to emojis.
+      Example (YAML):
+        PushEvent: "🚀"
+        CreateEvent: "✨"
+        DeleteEvent: "🔥"
+        IssuesEvent: |
+          opened: "🆕"
+    required: false
+    default: ""
+  EVENT_TEMPLATE:
+    description: |
+      Template string used to render all events.
+      Placeholders: {emoji}, {event_type}, {action}, {subject}, {verb}, {repo}, {repo_url}, {date}, {number}, {url}, {ref}, {ref_type}
+      Example: "{emoji} {action} {subject} {ref} {number} {verb} [{repo}]({url})"
+    required: false
+    default: "{emoji} {action} {subject} {ref} {number} {verb} [{repo}]({url})"
+  DRY_RUN:
+    description: Enable dry run mode (no changes will be committed)
+    required: false
+    default: 'false'
+branding:
+  color: red
+  icon: activity
+
+runs:
+  using:  node20
+  main:  ./dist/index.js
+
+
+
+
+
