@@ -11,7 +11,7 @@ import { describe, it } from 'node:test';
 import {
     applyTemplate,
     getEventAction,
-} from '../src/utils/templateEngine.js';
+} from '../../src/utils/templateEngine.js';
 
 describe('applyTemplate', () => {
     it('substitutes every placeholder it is given', () => {

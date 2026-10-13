@@ -2,13 +2,15 @@
 
 [![CI Dev Deployment](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/ci-dev.yml/badge.svg)](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/ci-dev.yml)
 [![CI/CD Deployment Pipeline](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/cicd-pipeline.yml/badge.svg)](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/cicd-pipeline.yml)
+[![Build-Test-Release](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/build-test-release.yml/badge.svg)](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/build-test-release.yml)
 
 A multi-stage GitHub Actions deployment pipeline built around the
 [activity-log](https://github.com/TheDanniCraft/activity-log) action as its base
 software. See [`UPSTREAM.md`](UPSTREAM.md) for exactly what was taken and what
 was changed.
 
-NTUST DevOps — Assignment 4. Author: Yi-Shan Chen (Selina Chen).
+NTUST DevOps — Assignments 4 and 5. Author: Yi-Shan Chen (Selina Chen),
+student ID B11233030.
 
 ## The pipeline
 
@@ -30,6 +32,24 @@ cicd-pipeline.yml   manual run ──► version ──► test (Node 20 │ 22)
                                     ⏸  deploy-production  ← human approval
                                                     │
                                           rollback ◄┘  on failure
+
+
+build-test-release.yml   push to main ──► version ──► build
+or a manual run                                         │
+                                                        ▼
+                                        test-unit  (ubuntu │ macOS × Node 20 │ 22)
+                                                   │         │
+                                        coverage ◄─┘         └─► test-integration
+                                            │                     (runs the built
+                                            │                      artifact, not src)
+                                            └──────────┬──────────┘
+                                                       ▼
+                                               deploy-staging
+                                                       │
+                                                       ▼
+                                     ⏸  deploy-production  ← human approval
+                                                       │
+                                               report ◄┘  always
 ```
 
 `staging` and `production` publish the **same artifact**. Only the tag, the
@@ -58,19 +78,40 @@ GH_TOKEN=<token> REPO=<owner/name> python3 scripts/setup_environments.py
 
 ```bash
 npm ci
-npm run lint        # eslint, correctness rules only
-npm test            # 11 unit tests over the template engine
-npm run build       # ncc bundle into dist/
+npm run lint              # eslint, correctness rules only
+npm run test:unit         # 49 unit tests, pure functions
+npm run build             # ncc bundle into dist/
+npm run test:integration  # 10 tests, runs dist/index.js against a stub API
+npm run test:coverage     # c8, writes coverage/coverage-summary.json
 ```
 
 The dev release happens automatically on push to `main`. The full pipeline is
 started from the Actions tab (*CI/CD Deployment Pipeline → Run workflow*); tick
 **Stop after staging** to rehearse without touching production.
 
+## Testing and the release gates
+
+Two layers, two different jobs, two different failure meanings. The full
+rationale is in [`TESTING.md`](TESTING.md); the short version:
+
+| Layer | What it runs | What it can catch |
+| --- | --- | --- |
+| Unit | imports from `src/`, 4 matrix legs | logic regressions, runtime differences |
+| Integration | runs `dist/index.js` from the build artifact | bundling faults, input handling, HTTP and file behaviour |
+
+A **failing test** fails its job, so every release job is skipped by `needs`.
+**Low coverage** does not fail anything — the coverage job reports a number and
+the release jobs skip *themselves* with an `if:`, because unverified is not the
+same as broken.
+
+Both gates can be demonstrated without committing anything: run
+*Build-Test-Release → Run workflow* and either tick **simulate_test_failure**
+or set **coverage_threshold** to `95`.
+
 ## The AI step
 
 `ai-release-notes` drafts the notes the production reviewer reads before
-approving. It runs with `contents: read` and `models: read` and nothing else, so
+approving. It runs with `contents: read` and nothing else, so
 it cannot create a release, move a tag or touch a deployment. Its output is an
 artifact a human opens at the approval gate. Commit text is treated as untrusted
 input: it is fenced inside a per-run nonce, the system prompt forbids following

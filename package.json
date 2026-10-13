@@ -16,13 +16,32 @@
 	"scripts": {
 		"watch": "ncc build src/index.js --watch --license licenses.txt",
 		"build": "ncc build src/index.js --license licenses.txt",
-		"test": "node --test test/*.test.js",
-		"lint": "eslint src test",
+		"test": "node --test test/unit/*.test.js",
+		"test:unit": "node --test test/unit/*.test.js",
+		"test:integration": "node --test test/integration/*.test.js",
+		"test:coverage": "c8 node --test test/unit/*.test.js",
+		"test:junit": "node --test --test-reporter=junit --test-reporter-destination=reports/unit-junit.xml test/unit/*.test.js",
+		"test:gate-check": "node scripts/gate_check.js",
+		"lint": "eslint src test scripts",
 		"lint:commit": "commitlint --last --verbose"
+	},
+	"c8": {
+		"all": true,
+		"include": [
+			"src/config.js",
+			"src/utils/templateEngine.js"
+		],
+		"reporter": [
+			"text",
+			"json-summary",
+			"lcov"
+		],
+		"reports-dir": "coverage"
 	},
 	"devDependencies": {
 		"@commitlint/cli": "^21.2.3",
 		"@vercel/ncc": "^0.44.1",
+		"c8": "^10.1.3",
 		"eslint": "^9.16.0"
 	}
 }

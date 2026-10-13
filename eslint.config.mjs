@@ -3,7 +3,7 @@
 // redeclaration) before a build is packaged, not to enforce a house style.
 export default [
     {
-        files: ['src/**/*.js', 'test/**/*.js'],
+        files: ['src/**/*.js', 'test/**/*.js', 'scripts/**/*.js'],
         languageOptions: {
             ecmaVersion: 2023,
             sourceType: 'module',
@@ -13,6 +13,7 @@ export default [
                 URL: 'readonly',
                 fetch: 'readonly',
                 setTimeout: 'readonly',
+                clearTimeout: 'readonly',
                 Buffer: 'readonly',
             },
         },

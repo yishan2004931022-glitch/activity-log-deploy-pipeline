@@ -1,0 +1,549 @@
+# Assignment 5 — Build → Test → Release, with testing gates.
+#
+# This is a separate file from cicd-pipeline.yml (Assignment 4) on purpose.
+# That pipeline and its release history are the evidence for that assignment;
+# rewriting it in place would have destroyed the thing it proves. This
+# workflow uses the same repository, the same environments and the same
+# protection rules, and adds the testing stage this brief asks for.
+#
+# The shape, and why it is this way round
+# ---------------------------------------
+# Assignment 4 tested BEFORE building, because the fastest signal is the most
+# useful one. This brief asks for the test stage to sit BETWEEN build and
+# release, and here that is the better design for a concrete reason: the
+# integration stage runs the *built bundle* - dist/index.js, the file
+# action.yml actually executes - downloaded from the build job. Testing source
+# you have not bundled cannot catch a bundling mistake, and bundling is
+# exactly where a JavaScript action breaks.
+#
+#   build ─► test-unit (4 legs) ─► coverage ──┐
+#                      └────────► test-integration ─► deploy-staging ─► deploy-production
+#                                                                           (approval)
+#
+# Two different kinds of gate
+# ---------------------------
+#   A failing test  -> the job FAILS. Everything downstream is skipped by
+#                      `needs`, because the code is known to be wrong.
+#   Low coverage    -> the job SUCCEEDS and publishes a number. The deploy
+#                      jobs then skip themselves with an `if:`, because the
+#                      code is not known to be wrong, only unverified.
+#
+# Both can be demonstrated on demand from the Run workflow dialog, without
+# committing a broken test; see the two inputs below.
+
+name: Build-Test-Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      simulate_test_failure:
+        description: 'Fail the unit test stage on purpose, to show the release being blocked'
+        type: boolean
+        default: false
+      coverage_threshold:
+        description: 'Minimum line coverage (%) required to release. Try 95 to watch the coverage gate skip the deploys.'
+        type: string
+        default: '80'
+      deploy_production:
+        description: 'Promote to production after staging (still requires reviewer approval)'
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.github/ISSUE_TEMPLATE/**'
+
+# Least privilege by default. `permissions:` is per job, so this default
+# applies to every job that does not override it, and only the jobs that
+# publish something raise it.
+permissions:
+  contents: read
+
+# One pipeline per ref at a time, so two pushes cannot race into the same tag.
+concurrency:
+  group: build-test-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_PRIMARY: '22'
+
+jobs:
+  # ── 1. Resolve the version ────────────────────────────────────────────────
+  # The release number is derived, never typed: major.minor from package.json,
+  # patch from the highest existing prod-v* tag plus one.
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - id: v
+        env:
+          BUILD_TAG: prod # the canonical channel for numbering
+        run: python3 scripts/compute_version.py
+
+  # ── 2. Build ──────────────────────────────────────────────────────────────
+  # Built once. Every stage after this consumes the same artifact, so the
+  # thing that gets tested is the thing that gets released.
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: version
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_PRIMARY }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Lint before building
+        run: npm run lint
+
+      - name: Build the bundle
+        run: npm run build
+
+      - name: Fail fast if the bundle is missing or empty
+        run: |
+          test -s dist/index.js || { echo "::error::dist/index.js was not produced"; exit 1; }
+          echo "bundle size: $(wc -c < dist/index.js) bytes"
+
+      - name: Package and checksum
+        run: |
+          zip -q -r build.zip dist action.yml package.json README.md LICENSE
+          sha256sum build.zip > build.zip.sha256
+          cat build.zip.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: |
+            build.zip
+            build.zip.sha256
+          retention-days: 30
+
+  # ── 3. Unit tests ─────────────────────────────────────────────────────────
+  # Pure functions only: no network, no child process, no build artifact. Runs
+  # on a matrix so a runtime-specific regression cannot reach a release.
+  #
+  # Note what this job does NOT do: it does not produce the coverage number.
+  # Outputs from a matrix job are whichever leg finished last, which is not a
+  # thing to build a release gate on. Coverage gets its own job below.
+  test-unit:
+    name: Unit tests (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    needs: build
+    strategy:
+      fail-fast: false # show every broken combination, not just the first
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['20', '22']
+    defaults:
+      run:
+        # Explicit, so the glob in `node --test test/unit/*.test.js` is
+        # expanded by the shell on every OS. Node only expands globs itself
+        # from version 22 - which is how Assignment 4's matrix earned its keep.
+        shell: bash
+    env:
+      TEST_ENV: staging
+      TEST_LAYER: unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Show the test environment
+        run: |
+          echo "TEST_ENV=$TEST_ENV  TEST_LAYER=$TEST_LAYER"
+          echo "node $(node -v) on ${{ matrix.os }}"
+
+      # The gate self-test. Passes silently on a normal run; fails the job
+      # when the dispatch input asks it to, so the release gate can be
+      # observed stopping the pipeline without committing a broken test.
+      - name: Gate self-test
+        env:
+          SIMULATE_FAILURE: ${{ inputs.simulate_test_failure }}
+        run: npm run test:gate-check
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+  # ── 4. Coverage ───────────────────────────────────────────────────────────
+  # A single job, so its outputs are deterministic, and the only job that
+  # decides whether coverage is sufficient to release.
+  coverage:
+    name: Coverage gate
+    runs-on: ubuntu-latest
+    needs: test-unit
+    outputs:
+      lines: ${{ steps.gate.outputs.coverage_lines }}
+      threshold: ${{ steps.gate.outputs.coverage_threshold }}
+      ok: ${{ steps.gate.outputs.coverage_ok }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_PRIMARY }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Measure coverage
+        run: npm run test:coverage
+
+      # Measuring and deciding are separate on purpose: the script reports a
+      # number and never exits non-zero, because low coverage is not a broken
+      # build. The workflow decides what to do about it.
+      - name: Evaluate the coverage gate
+        id: gate
+        run: node scripts/coverage_gate.js coverage/coverage-summary.json "${{ inputs.coverage_threshold || '80' }}"
+
+      # JUnit needs Node 21.6+, which is why it lives here on the primary
+      # version rather than in the matrix.
+      - name: Generate JUnit report
+        run: |
+          mkdir -p reports
+          npm run test:junit
+
+      - name: Upload coverage and test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            coverage/lcov.info
+            coverage/coverage-summary.json
+            coverage/lcov-report/**
+            reports/unit-junit.xml
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ── 5. Integration tests ──────────────────────────────────────────────────
+  # A genuinely different layer: imports nothing from src/, downloads the build
+  # artifact and runs dist/index.js as a child process against a stub GitHub
+  # API. This is the stage that can tell "the source is right" apart from
+  # "the thing we are about to release works".
+  test-integration:
+    name: Integration tests (built artifact)
+    runs-on: ubuntu-latest
+    needs: test-unit
+    env:
+      TEST_ENV: staging
+      TEST_LAYER: integration
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_PRIMARY }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      # dist/ is committed in this repository, as it is for any published
+      # JavaScript action. Deleting it first is what makes the claim "these
+      # tests ran against the build artifact" true rather than plausible: if
+      # the download or the unzip silently did nothing, there is no bundle to
+      # fall back on and the suite fails loudly.
+      - name: Remove the committed bundle
+        run: |
+          rm -rf dist
+          test ! -e dist/index.js && echo "committed dist/ removed"
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Verify the artifact, then unpack it
+        run: |
+          sha256sum -c build.zip.sha256
+          unzip -o -q build.zip
+          test -s dist/index.js || { echo "::error::dist/index.js missing from the artifact"; exit 1; }
+          echo "testing the bundle produced by the build job: $(wc -c < dist/index.js) bytes"
+
+      - name: Run integration tests against the built bundle
+        run: npm run test:integration
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "### Integration tests"
+            echo ""
+            echo "Ran against \`dist/index.js\` extracted from \`build-artifact\`, not against \`src/\`."
+            echo ""
+            echo "\`TEST_ENV=$TEST_ENV\` · \`TEST_LAYER=$TEST_LAYER\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 6. Deploy to staging ──────────────────────────────────────────────────
+  # Reached only when both test layers passed. Skips itself when coverage is
+  # below the threshold, which is a different outcome from a failed test.
+  deploy-staging:
+    name: Deploy to staging
+    runs-on: ubuntu-latest
+    needs: [version, test-unit, test-integration, coverage]
+    if: needs.coverage.outputs.ok == 'true'
+    environment:
+      name: staging
+      url: ${{ steps.release.outputs.url }}
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Verify the artifact
+        run: sha256sum -c build.zip.sha256
+
+      - name: Sign the artifact with the staging key
+        env:
+          SIGNING_KEY: ${{ secrets.DEPLOY_SIGNING_KEY }}
+        run: |
+          # An ENVIRONMENT secret, not a repository one: staging and production
+          # read the same NAME and receive different VALUES, so a staging
+          # signature cannot be replayed as a production one.
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::DEPLOY_SIGNING_KEY is not set on the staging environment"; exit 1
+          fi
+          openssl dgst -sha256 -hmac "$SIGNING_KEY" -out build.zip.sig build.zip
+          cat build.zip.sig
+
+      - name: Create the staging release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_TAG: ${{ vars.BUILD_TAG }}
+          RELEASE_NOTE: ${{ vars.RELEASE_NOTE }}
+          VERSION: ${{ needs.version.outputs.version }}
+          COVERAGE: ${{ needs.coverage.outputs.lines }}
+          THRESHOLD: ${{ needs.coverage.outputs.threshold }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # BUILD_TAG carries the channel ("staging-v1.0"); the pipeline owns
+          # the number. Channel + resolved version -> staging-v1.0.2
+          CHANNEL="${BUILD_TAG%%-*}"
+          TAG="${CHANNEL}-v${VERSION}"
+
+          # Written to a file rather than passed inline: a heredoc inside a
+          # YAML block scalar cannot have its terminator at column zero.
+          {
+            echo "$RELEASE_NOTE"
+            echo ""
+            echo "Released only because every gate below passed."
+            echo ""
+            echo "| Gate | Result |"
+            echo "| --- | --- |"
+            echo "| Unit tests | passed on ubuntu + macOS, Node 20 and 22 |"
+            echo "| Integration tests | passed against this build artifact |"
+            echo "| Line coverage | ${COVERAGE}% (threshold ${THRESHOLD}%) |"
+            echo ""
+            echo "Build tag variable: \`$BUILD_TAG\` · [run log]($RUN_URL)"
+          } > notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" build.zip build.zip.sha256 build.zip.sig \
+            --title "$TAG" --notes-file notes.md --prerelease
+
+          echo "url=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_OUTPUT"
+          echo "Released \`$TAG\` to staging." >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 7. Deploy to production ───────────────────────────────────────────────
+  # The production environment carries a required-reviewer rule, so this job
+  # waits in "Waiting" until a human approves it. That rule lives on the
+  # environment, not in this file, and no workflow permission can satisfy it.
+  deploy-production:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    needs: [version, coverage, deploy-staging]
+    if: |
+      needs.coverage.outputs.ok == 'true'
+      && (github.event_name == 'push' || inputs.deploy_production)
+    environment:
+      name: production
+      url: ${{ steps.release.outputs.url }}
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Verify this is the artifact the tests ran against
+        run: |
+          sha256sum -c build.zip.sha256
+          echo "sha256 matches the checksum recorded at build time"
+
+      - name: Sign the artifact with the production key
+        env:
+          SIGNING_KEY: ${{ secrets.DEPLOY_SIGNING_KEY }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::DEPLOY_SIGNING_KEY is not set on the production environment"; exit 1
+          fi
+          openssl dgst -sha256 -hmac "$SIGNING_KEY" -out build.zip.sig build.zip
+
+      - name: Create the production release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_TAG: ${{ vars.BUILD_TAG }}
+          RELEASE_NOTE: ${{ vars.RELEASE_NOTE }}
+          VERSION: ${{ needs.version.outputs.version }}
+          COVERAGE: ${{ needs.coverage.outputs.lines }}
+          THRESHOLD: ${{ needs.coverage.outputs.threshold }}
+          APPROVER: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          CHANNEL="${BUILD_TAG%%-*}"
+          TAG="${CHANNEL}-v${VERSION}"
+          STAGING_TAG="staging-v${VERSION}"
+
+          {
+            echo "$RELEASE_NOTE"
+            echo ""
+            echo "Promoted from \`$STAGING_TAG\` after the testing gates passed and a human approved."
+            echo ""
+            echo "| Gate | Result |"
+            echo "| --- | --- |"
+            echo "| Unit tests | ubuntu + macOS, Node 20 and 22 |"
+            echo "| Integration tests | passed against this exact artifact |"
+            echo "| Line coverage | ${COVERAGE}% (threshold ${THRESHOLD}%) |"
+            echo "| Artifact integrity | sha256 re-verified before publishing |"
+            echo "| Human approval | required reviewer on the production environment |"
+            echo ""
+            echo "Approved by @${APPROVER} · [run log]($RUN_URL)"
+          } > notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" build.zip build.zip.sha256 build.zip.sig \
+            --title "$TAG" --notes-file notes.md --latest
+
+          echo "url=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_OUTPUT"
+          echo "Released \`$TAG\` to production." >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 8. Report ─────────────────────────────────────────────────────────────
+  # Always runs, and is the one place that says in plain words which gate
+  # stopped the pipeline and what the consequence was. A skipped deploy with
+  # no explanation is indistinguishable from a bug.
+  report:
+    name: Pipeline report
+    runs-on: ubuntu-latest
+    needs: [build, test-unit, coverage, test-integration, deploy-staging, deploy-production]
+    if: always()
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Write the report
+        env:
+          R_BUILD: ${{ needs.build.result }}
+          R_UNIT: ${{ needs.test-unit.result }}
+          R_COVERAGE: ${{ needs.coverage.result }}
+          R_INTEGRATION: ${{ needs.test-integration.result }}
+          R_STAGING: ${{ needs.deploy-staging.result }}
+          R_PROD: ${{ needs.deploy-production.result }}
+          COVERAGE: ${{ needs.coverage.outputs.lines }}
+          THRESHOLD: ${{ needs.coverage.outputs.threshold }}
+          COVERAGE_OK: ${{ needs.coverage.outputs.ok }}
+        run: |
+          set -u
+          {
+            echo "## Build → Test → Release"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Build | $R_BUILD |"
+            echo "| Unit tests (4 legs) | $R_UNIT |"
+            echo "| Coverage gate | $R_COVERAGE |"
+            echo "| Integration tests | $R_INTEGRATION |"
+            echo "| Deploy staging | $R_STAGING |"
+            echo "| Deploy production | $R_PROD |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          VERDICT="released"
+          REASON=""
+
+          if [ "$R_UNIT" = "failure" ] || [ "$R_INTEGRATION" = "failure" ]; then
+            VERDICT="blocked by a failing test"
+            REASON="A test stage failed, so every release job was skipped by \`needs\`. Nothing was published."
+          elif [ "$COVERAGE_OK" = "false" ]; then
+            VERDICT="blocked by the coverage gate"
+            REASON="Tests passed, but line coverage ${COVERAGE}% is below the ${THRESHOLD}% threshold, so the release jobs skipped themselves. This is a different gate from a failing test: nothing is known to be broken, it is simply not verified enough to release."
+          elif [ "$R_STAGING" = "failure" ] || [ "$R_PROD" = "failure" ]; then
+            VERDICT="tests passed, a deployment failed"
+            REASON="The gates were satisfied but a release step failed. See the deploy job log."
+          elif [ "$R_PROD" = "skipped" ]; then
+            VERDICT="staging only"
+            REASON="Production was not requested, or the approval was not granted."
+          fi
+
+          {
+            echo "**Outcome: $VERDICT**"
+            if [ -n "$REASON" ]; then
+              echo ""
+              echo "$REASON"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Notification: a genuine test failure opens an issue, so a blocked
+      # release is not something you have to go looking at the Actions tab to
+      # notice. Deliberately narrow - the simulated failure is expected to
+      # fail, so it does not raise one.
+      - name: Open an issue for a failing test stage
+        if: |
+          (needs.test-unit.result == 'failure' || needs.test-integration.result == 'failure')
+          && inputs.simulate_test_failure != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          R_UNIT: ${{ needs.test-unit.result }}
+          R_INTEGRATION: ${{ needs.test-integration.result }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "The test stage failed, so no release was published."
+            echo ""
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Unit tests | $R_UNIT |"
+            echo "| Integration tests | $R_INTEGRATION |"
+            echo ""
+            echo "Commit: \`$SHA\`"
+            echo "Run: $RUN_URL"
+            echo ""
+            echo "Opened automatically by the \`report\` job of \`build-test-release.yml\`."
+          } > issue.md
+          gh issue create --title "Release blocked: tests failed on ${SHA:0:7}" --body-file issue.md

@@ -253,7 +253,9 @@ def main() -> int:
                       "the section below with that in mind.",
                     "",
                 ]
-            notes = "\n".join(header) + drafted + "\n"
+            # The blank line matters: without it markdown's lazy continuation
+            # swallows the model's first paragraph into the warning blockquote.
+            notes = "\n".join(header) + "\n" + drafted + "\n"
         except Exception as err:  # noqa: BLE001 - never block the pipeline
             reason = str(err) or type(err).__name__
             print(f"::warning::agent fell back to a plain listing: {reason}")
