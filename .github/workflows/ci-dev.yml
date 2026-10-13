@@ -1,8 +1,18 @@
 name: CI Dev Deployment
 
-# Part 2 (Grade A): every push to main builds the action and publishes a
-# dev release. Nothing here is gated - dev is the environment where we want
-# feedback to be instant.
+# Every push to main builds the action, tests it, and publishes a dev release.
+#
+# Assignment 4 left this path ungated on the argument that dev is where
+# feedback should be instant. Assignment 5 is explicit that the rule is
+# "release only if all tests pass", and that applies to every channel: a dev
+# release nobody tested is still a release somebody can install. The test job
+# below is the one the Assignment 5 brief describes literally - it depends on
+# build, downloads the artifact, and runs the tests against it - so the dev
+# path now has the same shape as the staging and production path:
+#
+#   build -> test -> release to dev
+#
+# It costs about 30 seconds, which is the honest price of the principle.
 on:
   push:
     branches: [main]
@@ -53,9 +63,75 @@ jobs:
           path: build.zip
           retention-days: 7
 
+  # ── Test ──────────────────────────────────────────────────────────────────
+  # Sits between build and release, and tests the ARTIFACT rather than the
+  # working tree: the committed dist/ is deleted first, then restored from
+  # build.zip. Without that, a failed download would silently fall back to the
+  # committed bundle and the job would pass while proving nothing.
+  test:
+    name: Test
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      TEST_ENV: dev
+      TEST_LAYER: unit+integration
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Remove the committed bundle
+        run: |
+          rm -rf dist
+          test ! -e dist/index.js && echo "committed dist/ removed"
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Restore the bundle from the artifact
+        run: |
+          # Only dist/, deliberately. This workflow's build.zip is an archive
+          # of the whole working tree, node_modules included, so extracting all
+          # of it over a fresh `npm ci` replaces the symlinks in
+          # node_modules/.bin with plain files and breaks the toolchain. The
+          # bundle is the only thing this job needs from the artifact.
+          unzip -o -q build.zip 'dist/*'
+          test -s dist/index.js || { echo "::error::dist/index.js missing from the artifact"; exit 1; }
+          echo "testing the bundle from the build job: $(wc -c < dist/index.js) bytes"
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Integration tests against the built bundle
+        run: npm run test:integration
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Tests before the dev release"
+            echo ""
+            echo "| Layer | Scope |"
+            echo "| --- | --- |"
+            echo "| Unit | 49 tests, imports from \`src/\` |"
+            echo "| Integration | 10 tests, runs \`dist/index.js\` from \`build-artifact\` |"
+            echo ""
+            echo "\`TEST_ENV=$TEST_ENV\` · the dev release is skipped unless both pass."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy-dev:
     name: Deploy to dev
-    needs: build
+    needs: test
     runs-on: ubuntu-latest
     # Binds the job to the dev environment, so vars.* below resolve to the
     # dev values and the run shows up in the environment's deployment history.
