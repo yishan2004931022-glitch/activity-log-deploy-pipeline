@@ -13,6 +13,7 @@ a pull request that someone has to review.
 | Owner | PM |
 | Last reviewed | 2026-10-21 |
 | Applies to | `main` |
+| Required check | `gate` |
 
 ## The rules
 
