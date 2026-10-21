@@ -29,6 +29,14 @@ Default merge style: **Squash and merge**, with one exception. Squash is the def
 
 To be filled in once the team has compared the options on real history.
 
+## Revert procedure
+
+A squashed or rebased commit reverts with `git revert <sha>`. A merge
+commit needs `git revert -m 1 <sha>`, where `1` means "keep the first
+parent", and getting that number wrong reverts the opposite side of the
+history. That asymmetry is the main practical argument against merge
+commits for routine changes.
+
 ## Open questions
 
 - Which style keeps `git bisect` most useful?
