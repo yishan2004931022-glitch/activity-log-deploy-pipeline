@@ -22,7 +22,7 @@ a pull request that someone has to review.
 
 ## Default merge style
 
-Default merge style: TBD — the team has not decided yet.
+Default merge style: **Squash and merge**. One commit per pull request keeps `main` readable and makes `git bisect` land on whole changes rather than half-finished ones.
 
 ## Rationale
 
