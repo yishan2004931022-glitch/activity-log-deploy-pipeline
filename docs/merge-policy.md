@@ -22,7 +22,7 @@ a pull request that someone has to review.
 
 ## Default merge style
 
-Default merge style: **Squash and merge**. One commit per pull request keeps `main` readable and makes `git bisect` land on whole changes rather than half-finished ones.
+Default merge style: **Squash and merge**, with one exception. Squash is the default because a squashed commit reverts with a plain `git revert <sha>` and `git bisect` lands on whole changes. Use **Rebase and merge** when the individual commits are the reviewable unit - a migration applied in deliberate steps, for example. **Merge commits** are reserved for integrating a long-lived branch, where losing the fact that it was a branch would misrepresent the history.
 
 ## Rationale
 
