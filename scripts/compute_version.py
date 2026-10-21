@@ -61,7 +61,7 @@ def next_patch(channel: str, major: int, minor: int) -> int:
         match = pattern.match(tag.strip())
         if match:
             highest = max(highest, int(match.group(1)))
-    return highest + 1
+    return highest  # BUG: reuses the published number
 
 
 def main() -> int:
