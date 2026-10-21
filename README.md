@@ -4,6 +4,8 @@
 [![CI/CD Deployment Pipeline](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/cicd-pipeline.yml/badge.svg)](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/cicd-pipeline.yml)
 [![Build-Test-Release](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/build-test-release.yml/badge.svg)](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/build-test-release.yml)
 
+[![PR Checks](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/ci-pr.yml/badge.svg)](https://github.com/yishan2004931022-glitch/activity-log-deploy-pipeline/actions/workflows/ci-pr.yml)
+
 A multi-stage GitHub Actions deployment pipeline built around the
 [activity-log](https://github.com/TheDanniCraft/activity-log) action as its base
 software. See [`UPSTREAM.md`](UPSTREAM.md) for exactly what was taken and what
