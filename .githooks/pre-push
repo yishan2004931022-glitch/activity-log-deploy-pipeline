@@ -1,0 +1,72 @@
+#!/bin/bash
+# Refuse to push directly to main, and refuse to push a merge commit.
+#
+# Branch protection on the server already rejects both. This hook exists so
+# the answer arrives in one second on your machine instead of thirty seconds
+# later as a rejected push or a red check, and so the reason is a sentence
+# rather than a status code.
+#
+# Install it once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# A hook is advisory - `git push --no-verify` skips it - which is exactly why
+# the same rule is also enforced server side by branch protection and by
+# scripts/check_merge_hygiene.py in CI. This is the convenient layer, not the
+# load-bearing one.
+
+set -u
+
+PROTECTED="main"
+rc=0
+
+say()  { printf '\033[1;31mpre-push: %s\033[0m\n' "$1" >&2; }
+hint() { printf '           %s\n' "$1" >&2; }
+
+# git feeds the hook one line per ref being pushed:
+#   <local ref> <local sha> <remote ref> <remote sha>
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # A deletion has an all-zero local sha; nothing to inspect.
+    case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+
+    remote_branch="${remote_ref#refs/heads/}"
+
+    if [ "$remote_branch" = "$PROTECTED" ]; then
+        say "direct push to '$PROTECTED' is not allowed."
+        hint "Every change goes through a pull request so CI can gate it."
+        hint ""
+        hint "  git switch -c feat/<short-name>"
+        hint "  git push -u origin feat/<short-name>"
+        hint ""
+        hint "Then open a PR. If you genuinely need to bypass this hook,"
+        hint "'git push --no-verify' skips it - and branch protection will"
+        hint "still refuse the push, which is the point."
+        rc=1
+        continue
+    fi
+
+    # Work out what is new on this branch relative to main.
+    if git rev-parse --verify --quiet origin/"$PROTECTED" >/dev/null; then
+        range="origin/$PROTECTED..$local_sha"
+    else
+        range="$local_sha"
+    fi
+
+    merges=$(git rev-list --merges "$range" 2>/dev/null)
+    if [ -n "$merges" ]; then
+        say "this branch contains merge commit(s):"
+        while read -r m; do
+            [ -n "$m" ] && hint "  $(git log -1 --pretty='%h %s' "$m")"
+        done <<< "$merges"
+        hint ""
+        hint "Catch up with $PROTECTED by rebasing, so the branch stays a"
+        hint "linear series of reviewable commits:"
+        hint ""
+        hint "  git fetch origin $PROTECTED"
+        hint "  git rebase origin/$PROTECTED"
+        hint "  git push --force-with-lease"
+        rc=1
+    fi
+done
+
+exit $rc

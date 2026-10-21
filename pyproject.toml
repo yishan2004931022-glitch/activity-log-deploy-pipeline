@@ -1,0 +1,40 @@
+# Configuration for the Python side of the pipeline's tooling.
+#
+# The repository is a JavaScript action, but the pipeline itself is driven by
+# Python helpers (version resolution, the release-notes agent, environment
+# setup). Those are production code for the pipeline, so they are linted and
+# tested like it - across three interpreter versions, because a GitHub runner
+# image can change its default Python without asking.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["node_modules", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes: undefined names, unused imports
+    "B",    # flake8-bugbear: likely bugs
+    "UP",   # pyupgrade
+    "I",    # import sorting
+]
+ignore = [
+    "E501",  # line length is handled by the formatter, not the linter
+    "B008",  # function calls in defaults are deliberate in these scripts
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test/python"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.ruff.lint.isort]
+# scripts/ is put on sys.path by test/python/conftest.py rather than being a
+# package, so ruff cannot infer that these are ours. Saying so keeps the
+# import blocks in the conventional stdlib / third-party / local order.
+known-first-party = [
+    "compute_version",
+    "release_notes_agent",
+    "setup_environments",
+]

@@ -1,0 +1,195 @@
+# Checks that run on every pull request.
+#
+# Why this file exists at all
+# ---------------------------
+# The other three workflows trigger on `push` and `workflow_dispatch`. Not one
+# of them triggers on `pull_request`, so before this file existed a pull
+# request produced no checks whatsoever - and switching on "require status
+# checks to pass" in branch protection would have left every PR waiting
+# forever for a check that never runs. Requiring CI on PRs means first having
+# CI on PRs.
+#
+# What it runs, and why it is not just a copy of the release pipeline
+# -------------------------------------------------------------------
+# A PR check has a different job from a release pipeline: it has to be fast
+# enough that nobody is tempted to merge around it. So this runs the gates
+# that catch mistakes - lint and tests, on both languages in the repository -
+# and leaves the heavier release work (packaging, signing, promotion) to the
+# pipeline that runs after the merge lands.
+#
+# The Python matrix is not decoration. The pipeline is driven by Python
+# helpers that resolve release numbers and screen the agent's output, and the
+# runner image's default Python moves without asking. Testing on three
+# interpreters is how we find out before a release does.
+#
+# One required check
+# ------------------
+# Branch protection requires a check *by name*, and a matrix produces one
+# check per leg - so requiring them individually means editing the protection
+# rule every time the matrix changes. The `gate` job at the bottom collects
+# every other job's result into a single check, so branch protection requires
+# exactly one name: "gate". Adding a matrix leg later needs no change to the
+# rule.
+
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# A new push to the same PR makes the previous run irrelevant.
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 1. Merge hygiene ──────────────────────────────────────────────────────
+  # Catches a branch that merged main into itself instead of rebasing. See
+  # scripts/check_merge_hygiene.py for the reasoning.
+  merge-hygiene:
+    name: Merge hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The check compares base..head, so it needs both, not a shallow
+          # clone of the merge result.
+          fetch-depth: 0
+
+      - name: Check for merge commits in the branch
+        run: |
+          python3 scripts/check_merge_hygiene.py \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
+
+  # ── 2. Lint, both languages ───────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci || npm install
+
+      - name: ESLint
+        run: npm run lint
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Ruff
+        run: python -m pip install --quiet ruff
+
+      - name: Ruff
+        run: python -m ruff check scripts test/python
+
+  # ── 3. JavaScript tests ───────────────────────────────────────────────────
+  # One runner, not the full OS x version matrix: that matrix runs after the
+  # merge, where a slow thorough check costs nobody's attention. Here the job
+  # is to answer quickly.
+  test-js:
+    name: JavaScript tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci || npm install
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Build the bundle
+        run: npm run build
+
+      - name: Integration tests against the built bundle
+        run: npm run test:integration
+
+  # ── 4. Python tests, three interpreters ───────────────────────────────────
+  test-python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Not three consecutive versions for the sake of it:
+        #   3.11 - the oldest interpreter these scripts support
+        #   3.13 - what the ubuntu runner image ships today
+        #   3.14 - what the maintainer's own machine runs
+        # The last one matters: Assignment 5 was derailed by a
+        # local Node 26 behaving differently from CI's Node 20.
+        # The same trap exists here, so the dev interpreter is in
+        # the matrix rather than assumed to match.
+        python: ["3.11", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install test dependencies
+        run: python -m pip install --quiet pytest
+
+      - name: Show the interpreter under test
+        run: python -VV
+
+      - name: Run the Python test suite
+        run: python -m pytest test/python -q
+
+  # ── 5. One check to require ───────────────────────────────────────────────
+  # `if: always()` so it reports even when something above it failed, and an
+  # explicit result check so "all skipped" cannot masquerade as success.
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    needs: [merge-hygiene, lint, test-js, test-python]
+    if: always()
+    steps:
+      - name: Collect results
+        env:
+          R_HYGIENE: ${{ needs.merge-hygiene.result }}
+          R_LINT: ${{ needs.lint.result }}
+          R_JS: ${{ needs.test-js.result }}
+          R_PY: ${{ needs.test-python.result }}
+        run: |
+          set -u
+          {
+            echo "## PR checks"
+            echo ""
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Merge hygiene | $R_HYGIENE |"
+            echo "| Lint (ESLint + Ruff) | $R_LINT |"
+            echo "| JavaScript tests | $R_JS |"
+            echo "| Python 3.11 / 3.13 / 3.14 | $R_PY |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          failed=0
+          for r in "$R_HYGIENE" "$R_LINT" "$R_JS" "$R_PY"; do
+            [ "$r" = "success" ] || failed=1
+          done
+
+          if [ "$failed" -eq 1 ]; then
+            echo "**This pull request is not mergeable.** Branch protection requires \`gate\`, and at least one check above did not pass." >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::one or more PR checks failed"
+            exit 1
+          fi
+
+          echo "All checks passed. The merge button is unblocked." >> "$GITHUB_STEP_SUMMARY"

@@ -13,3 +13,9 @@ build.zip.sha256
 build.zip.sig
 notes.md
 issue.md
+
+# Python tooling caches
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
