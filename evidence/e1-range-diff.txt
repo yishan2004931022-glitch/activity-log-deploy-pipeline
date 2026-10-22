@@ -1,0 +1,20 @@
+# git range-diff 00cafa9..3d2e2a0 e58a3a8..8a1e546
+#
+# Left  = the commit as originally written, on the old base.
+# Right = the same commit after rebasing onto the new main.
+# A '!' means the content differs - here, because the conflict was
+# resolved during the rebase. That is exactly what a reviewer needs
+# to see: the hash changed AND so did the content, deliberately.
+
+1:  3d2e2a0 ! 1:  8a1e546 docs(policy): adopt rebase and merge as the default
+    @@ docs/merge-policy.md: a pull request that someone has to review.
+      
+      ## Default merge style
+      
+    --Default merge style: TBD — the team has not decided yet.
+    -+Default merge style: **Rebase and merge**. Keeping every individual commit preserves the author's reasoning, and a linear history means `git bisect` never has to choose a side at a merge.
+    +-Default merge style: **Squash and merge**. One commit per pull request keeps `main` readable and makes `git bisect` land on whole changes rather than half-finished ones.
+    ++Default merge style: **Squash and merge**, with one exception. Squash is the default because a squashed commit reverts with a plain `git revert <sha>` and `git bisect` lands on whole changes. Use **Rebase and merge** when the individual commits are the reviewable unit - a migration applied in deliberate steps, for example. **Merge commits** are reserved for integrating a long-lived branch, where losing the fact that it was a branch would misrepresent the history.
+      
+      ## Rationale
+      

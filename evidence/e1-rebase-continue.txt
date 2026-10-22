@@ -1,0 +1,4 @@
+Recorded resolution for 'docs/merge-policy.md'.
+[detached HEAD 8a1e546] docs(policy): adopt rebase and merge as the default
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+Successfully rebased and updated refs/heads/exp1/dev-b-rebase.

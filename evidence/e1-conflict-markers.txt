@@ -1,0 +1,5 @@
+<<<<<<< HEAD
+Default merge style: **Squash and merge**. One commit per pull request keeps `main` readable and makes `git bisect` land on whole changes rather than half-finished ones.
+=======
+Default merge style: **Rebase and merge**. Keeping every individual commit preserves the author's reasoning, and a linear history means `git bisect` never has to choose a side at a merge.
+>>>>>>> 3d2e2a0 (docs(policy): adopt rebase and merge as the default)

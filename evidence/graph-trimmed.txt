@@ -1,0 +1,24 @@
+# Trimmed to the experiment commits only.
+
+* b27704c (HEAD -> main, origin/main, origin/HEAD) Fix/evidence tooling (#8)
+* a1fb7a8 docs: add the PR Checks badge to the README
+* f62282c docs: describe what each CI gate is for
+* e9c3c79 docs(policy): write down how a revert actually works
+* 6c97f64 docs(policy): record the required status check in the table
+* 835491a docs(policy): adopt rebase and merge as the default
+*   e58a3a8 Merge pull request #2 from yishan2004931022-glitch/exp1/dev-a-squash
+|\  
+| * 0c80892 (origin/exp1/dev-a-squash, exp1/dev-a-squash) docs(policy): adopt squash and merge as the default
+|/  
+* 00cafa9 (tag: staging-v1.0.4, tag: dev-v1.0) ci: add PR checks, Python tests and merge-hygiene tooling
+* 4a7c332 (tag: staging-v1.0.3, tag: prod-v1.0.3) ci: gate the dev release behind the tests as well
+* b252f8f (tag: staging-v1.0.2, tag: prod-v1.0.2) test: add a testing stage between build and release
+* 6cc6316 (tag: staging-v1.0.1, tag: prod-v1.0.1) fix: make the agent provider-configurable after GitHub Models retired
+* 81364b7 (tag: staging-v1.0.0, tag: prod-v1.0.0) fix: run the test files through shell expansion, not node's glob
+* 0ac15b5 fix: create the environments before pushing
+* f4b2044 chore: ignore __pycache__
+* 71276f8 chore: add a one-shot setup script
+* 1fb19cf feat: three-stage pipeline with a guarded AI release-notes step
+* 4c41d51 feat: build and release to the dev environment on every push to main
+* a7a075e chore: adapt the action so it can be built and released by CI
+* ffe2be4 chore: import activity-log at 681a71c as the base software
