@@ -62,9 +62,14 @@ say "What each merge style actually produced"
     echo "#   1 parent  -> squash or rebase (indistinguishable from the graph;"
     echo "#                the difference is how many commits arrived)"
     echo
-    git log --format='%h  parents=%p  %s' -15 | while IFS= read -r line; do
-        n=$(echo "$line" | sed -n 's/.*parents=\([^ ]*\) .*/\1/p' | wc -w | tr -d ' ')
-        printf '%s   <- %s parent(s)\n' "$line" "$n"
+    # %p expands to ALL parent hashes, space separated. The previous version
+    # pulled out only the first with sed, so every merge commit was reported
+    # as having a single parent - precisely the distinction this file exists
+    # to show.
+    git log --format='%h|%p|%s' -15 | while IFS='|' read -r h parents subject; do
+        n=$(printf '%s' "$parents" | wc -w | tr -d ' ')
+        if [ "$n" -gt 1 ]; then kind="MERGE COMMIT"; else kind="single parent"; fi
+        printf '%-9s %-18s %-14s %s\n' "$h" "parents=$n" "$kind" "$subject"
     done
 } > "$OUT/merge-shapes.txt"
 sed 's/^/    /' "$OUT/merge-shapes.txt" | head -12
