@@ -63,9 +63,9 @@ say "What each merge style actually produced"
     echo "#                the difference is how many commits arrived)"
     echo
     # %p expands to ALL parent hashes, space separated. The previous version
-    # pulled out only the first with sed, so every merge commit was reported
-    # as having a single parent - precisely the distinction this file exists
-    # to show.
+    # of this script pulled out only the first one with sed, so every merge
+    # commit was reported as having a single parent - which is precisely the
+    # distinction the file exists to show.
     git log --format='%h|%p|%s' -15 | while IFS='|' read -r h parents subject; do
         n=$(printf '%s' "$parents" | wc -w | tr -d ' ')
         if [ "$n" -gt 1 ]; then kind="MERGE COMMIT"; else kind="single parent"; fi
@@ -130,34 +130,54 @@ ok "ff-demo.txt"
 
 # ───────────────────── 4. the guards refusing ─────────────────────
 say "The non-fast-forward guards"
+# Two branches touching DIFFERENT files, so the merge succeeds and genuinely
+# produces a merge commit. The previous version merged a branch that edited
+# the same file, hit a conflict, and left the repository mid-merge - so the
+# check ran on a branch with no merge commit and reported "OK", which is the
+# opposite of the point.
+git branch -D demo/other demo/dirty 2>/dev/null || true
 {
-    echo "### scripts/check_merge_hygiene.py on a branch that merged main in"
+    echo "### 1. scripts/check_merge_hygiene.py, on a branch that merged instead of rebasing"
     echo
-    git branch -D demo/dirty-branch 2>/dev/null || true
-    git checkout -q -b demo/dirty-branch main
-    printf '\n- Guard demo entry.\n' >> docs/merge-policy.md
-    git commit -q -am "docs(policy): guard demo"
-    git merge -q --no-edit release/ff-demo 2>/dev/null || true
-    echo "$ python3 scripts/check_merge_hygiene.py main HEAD"
-    python3 scripts/check_merge_hygiene.py main HEAD 2>&1 || true
+    git checkout -q -b demo/other main
+    printf '\n<!-- guard demo: a change on another branch -->\n' >> docs/ci-gates.md
+    git commit -q -am "docs: a change on another branch"
+    git checkout -q -b demo/dirty main
+    printf '\n<!-- guard demo: a change on this branch -->\n' >> docs/merge-policy.md
+    git commit -q -am "docs: a change on this branch"
+    git merge --no-edit demo/other >/dev/null 2>&1
+    echo "\$ python3 scripts/check_merge_hygiene.py main HEAD"
+    python3 scripts/check_merge_hygiene.py main HEAD 2>&1 || echo "(exit code 1 - the pull request would be refused)"
     echo
     echo
-    echo "### .githooks/pre-push on a direct push to main"
+    echo "### 2. .githooks/pre-push, refusing a direct push to main"
     echo
-    git checkout -q main
-    echo "$ git push origin main        (with core.hooksPath=.githooks)"
-    echo "(the hook refuses before git contacts the server:)"
+    echo "git feeds the hook one line per ref on stdin, so it can be exercised"
+    echo "directly without contacting the server:"
     echo
-    sed -n '/direct push to/,/which is the point/p' .githooks/pre-push \
-        | sed 's/^ *hint "\(.*\)"$/           \1/; s/^ *say "\(.*\)"$/pre-push: \1/' \
-        | grep -vE '^\s*(hint ""|rc=1|continue|fi|\s*$)' | head -12
+    echo "\$ echo 'refs/heads/main <local> refs/heads/main <remote>' | .githooks/pre-push origin <url>"
+    echo "refs/heads/main $(git rev-parse HEAD) refs/heads/main $(git rev-parse origin/main)" \
+        | .githooks/pre-push origin "$(git remote get-url origin)" 2>&1 || true
+    echo
+    echo
+    echo "### 3. the same hook, refusing a branch that carries a merge commit"
+    echo
+    echo "\$ echo 'refs/heads/demo/dirty <local> refs/heads/demo/dirty <zeros>' | .githooks/pre-push ..."
+    echo "refs/heads/demo/dirty $(git rev-parse demo/dirty) refs/heads/demo/dirty 0000000000000000000000000000000000000000" \
+        | .githooks/pre-push origin "$(git remote get-url origin)" 2>&1 || true
+    echo
+    echo "Three layers, deliberately: the hook answers in a second but can be"
+    echo "skipped with --no-verify; the CI check cannot be skipped; branch"
+    echo "protection refuses the push regardless. Only the last one is"
+    echo "load-bearing - the other two exist so the answer arrives early."
 } > "$OUT/guard-demo.txt" 2>&1
-sed 's/^/    /' "$OUT/guard-demo.txt" | head -22
+git checkout -q main
+sed 's/^/    /' "$OUT/guard-demo.txt" | head -18
 ok "guard-demo.txt"
 
 say "Cleaning up the demo branches"
 git checkout -q main
-git branch -D release/ff-demo feat/ff-source demo/dirty-branch 2>/dev/null || true
+git branch -D release/ff-demo feat/ff-source demo/other demo/dirty 2>/dev/null || true
 git reset -q --hard origin/main
 ok "local demo branches removed; nothing was pushed"
 
