@@ -27,7 +27,38 @@ Default merge style: **Squash and merge**, with one exception. Squash is the def
 
 ## Rationale
 
-To be filled in once the team has compared the options on real history.
+Measured on this repository's own history, not from a blog post. See
+`evidence/` for the raw output.
+
+| | Merge commit | Squash | Rebase |
+| --- | --- | --- | --- |
+| Commits added to `main` per PR | n + 1 | 1 | n |
+| Parents of the resulting commit | **2** | 1 | 1 |
+| Shows in `git log --graph` that a branch existed | yes | no | no |
+| Reverting it | `git revert -m 1 <sha>` | `git revert <sha>` | one revert per commit |
+| `git bisect` behaviour | must pick a side at each merge | lands on a whole change | lands on each step |
+| Commit hashes survive | yes | no | no |
+
+The revert row is the one that settled it. Reverting a merge commit needs
+`-m 1` to say which parent to keep, and getting that number wrong reverts the
+other side of the history - which is a thing people do at the worst possible
+moment, under pressure, during an incident. A squashed commit reverts with no
+flags at all.
+
+The bisect row is the runner-up. `git bisect` over the five rebased commits in
+this experiment lands on one small change at a time; over a merge commit it
+has to descend into a branch that was never on `main` on its own.
+
+## Fast-forward
+
+Fast-forward is not a fourth button. It is a property the history either has
+or has not got by the time you reach the merge, and GitHub never offers it:
+every merge button writes a new commit. `evidence/ff-demo.txt` shows the same
+`git merge --ff-only` succeeding when the target has not moved and refusing -
+`fatal: Not possible to fast-forward, aborting` - once it has.
+
+It is also unavailable on `main` here by construction: branch protection
+forbids direct pushes, and a fast-forward is a push, not a merge.
 
 ## Revert procedure
 
