@@ -1,0 +1,43 @@
+### 1. A fast-forward that works
+
+An integration branch, and a feature branch built on top of it.
+Nothing else has moved, so the integration branch can simply be
+moved forward - no merge commit is created, because none is needed.
+
+$ git merge --ff-only feat/ff-source
+Updating b27704c..eae65be
+Fast-forward
+ docs/merge-policy.md | 2 ++
+ 1 file changed, 2 insertions(+)
+
+$ git log --graph --oneline -4
+* eae65be docs(policy): entry used for the fast-forward demonstration
+* b27704c Fix/evidence tooling (#8)
+* a1fb7a8 docs: add the PR Checks badge to the README
+* f62282c docs: describe what each CI gate is for
+
+No merge node. release/ff-demo now POINTS AT the feature commit;
+the two branches are the same commit.
+
+
+### 2. The same command, refused
+
+Now the integration branch moves on independently. The histories have
+diverged, so there is no way to fast-forward without inventing a
+merge - and --ff-only says so rather than quietly making one.
+
+$ git merge --ff-only feat/ff-source
+hint: Diverging branches can't be fast-forwarded, you need to either:
+hint:
+hint: 	git merge --no-ff
+hint:
+hint: or:
+hint:
+hint: 	git rebase
+hint:
+hint: Disable this message with "git config set advice.diverging false"
+fatal: Not possible to fast-forward, aborting.
+
+This is the whole point of fast-forward as a POLICY: it is not a
+merge style you choose at the end, it is a property the history
+either has or does not have by the time you get there.

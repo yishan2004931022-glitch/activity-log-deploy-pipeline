@@ -1,0 +1,22 @@
+# For each commit on main: number of parents, and the subject.
+#
+#   2 parents -> a merge commit (the PR's commits are preserved AND
+#                a merge node records that a branch existed)
+#   1 parent  -> squash or rebase (indistinguishable from the graph;
+#                the difference is how many commits arrived)
+
+b27704c   parents=1          single parent  Fix/evidence tooling (#8)
+a1fb7a8   parents=1          single parent  docs: add the PR Checks badge to the README
+f62282c   parents=1          single parent  docs: describe what each CI gate is for
+e9c3c79   parents=1          single parent  docs(policy): write down how a revert actually works
+6c97f64   parents=1          single parent  docs(policy): record the required status check in the table
+835491a   parents=1          single parent  docs(policy): adopt rebase and merge as the default
+e58a3a8   parents=2          MERGE COMMIT   Merge pull request #2 from yishan2004931022-glitch/exp1/dev-a-squash
+0c80892   parents=1          single parent  docs(policy): adopt squash and merge as the default
+00cafa9   parents=1          single parent  ci: add PR checks, Python tests and merge-hygiene tooling
+4a7c332   parents=1          single parent  ci: gate the dev release behind the tests as well
+b252f8f   parents=1          single parent  test: add a testing stage between build and release
+6cc6316   parents=1          single parent  fix: make the agent provider-configurable after GitHub Models retired
+81364b7   parents=1          single parent  fix: run the test files through shell expansion, not node's glob
+0ac15b5   parents=1          single parent  fix: create the environments before pushing
+f4b2044   parents=1          single parent  chore: ignore __pycache__

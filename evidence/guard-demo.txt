@@ -1,0 +1,48 @@
+### 1. scripts/check_merge_hygiene.py, on a branch that merged instead of rebasing
+
+$ python3 scripts/check_merge_hygiene.py main HEAD
+commits in main..HEAD: 3
+  MERGE -> d24a466 (2 parents) Merge branch 'demo/other' into demo/dirty
+           b9378ce (1 parent) docs: a change on this branch
+           90795f2 (1 parent) docs: a change on another branch
+
+FAILED: 1 merge commit(s) in this branch.
+  d24a466 Merge branch 'demo/other' into demo/dirty
+::error::merge commits in a pull request branch; rebase onto main instead
+(exit code 1 - the pull request would be refused)
+
+
+### 2. .githooks/pre-push, refusing a direct push to main
+
+git feeds the hook one line per ref on stdin, so it can be exercised
+directly without contacting the server:
+
+$ echo 'refs/heads/main <local> refs/heads/main <remote>' | .githooks/pre-push origin <url>
+[1;31mpre-push: direct push to 'main' is not allowed.[0m
+           Every change goes through a pull request so CI can gate it.
+           
+             git switch -c feat/<short-name>
+             git push -u origin feat/<short-name>
+           
+           Then open a PR. If you genuinely need to bypass this hook,
+           'git push --no-verify' skips it - and branch protection will
+           still refuse the push, which is the point.
+
+
+### 3. the same hook, refusing a branch that carries a merge commit
+
+$ echo 'refs/heads/demo/dirty <local> refs/heads/demo/dirty <zeros>' | .githooks/pre-push ...
+[1;31mpre-push: this branch contains merge commit(s):[0m
+             d24a466 Merge branch 'demo/other' into demo/dirty
+           
+           Catch up with main by rebasing, so the branch stays a
+           linear series of reviewable commits:
+           
+             git fetch origin main
+             git rebase origin/main
+             git push --force-with-lease
+
+Three layers, deliberately: the hook answers in a second but can be
+skipped with --no-verify; the CI check cannot be skipped; branch
+protection refuses the push regardless. Only the last one is
+load-bearing - the other two exist so the answer arrives early.
